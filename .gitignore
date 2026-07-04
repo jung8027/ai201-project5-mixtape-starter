@@ -25,6 +25,7 @@ build/
 
 # macOS
 .DS_Store
+documents/
 
 # Editor
 .vscode/
