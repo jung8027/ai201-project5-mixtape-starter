@@ -19,23 +19,23 @@
 Every route follows the same shape: parse/validate request data, call exactly one service function, catch `ValueError` and turn it into a 4xx JSON error. No business logic lives in `routes/` — it's all parsing and response formatting.
 
 **`services/`** — All business logic:
-- `streak_service.py` — `record_listening_event()` creates a `ListeningEvent` then calls `update_listening_streak()`, which compares `now.date()` against `user.last_listened_at.date()` to decide whether to no-op (same day), increment (exactly 1 day gap), or reset to 1 (gap > 1 day, or `today.weekday() != 6`... i.e. there's an explicit weekday-based branch condition here).
-- `feed_service.py` — `get_friends_listening_now()` pulls the user's friend IDs, queries `ListeningEvent` rows within a `RECENT_THRESHOLD` window (currently a flat `timedelta(hours=24)` rolling cutoff, not calendar-day-based), dedupes to one event per friend. `get_activity_feed()` is the non-recency-filtered version (most recent N events regardless of age).
+- `streak_service.py` — `record_listening_event()` creates a `ListeningEvent` then calls `update_listening_streak()`, which compares `now.date()` against `user.last_listened_at.date()` to decide whether to no-op (same day), increment by 1 (exactly one day has passed and today is not Sunday, per `today.weekday() != 6`), or reset to 1 (any other gap).
+- `feed_service.py` — `get_friends_listening_now()` pulls the user's friend IDs, queries `ListeningEvent` rows with `listened_at >= datetime.now(timezone.utc) - RECENT_THRESHOLD` (a 24-hour `timedelta`), dedupes to one event per friend. `get_activity_feed()` is the non-recency-filtered version (most recent N events regardless of age).
 - `search_service.py` — `search_songs()` does a case-insensitive `ilike` match on title/artist, outer-joined against `song_tags` to pull tags in the same query.
-- `notification_service.py` — `create_notification()` is the single low-level constructor. `add_to_playlist()` appends the song to the playlist and then calls `create_notification()` to tell the original sharer. `rate_song()` saves/updates a `Rating` row (upsert on the `user_id`+`song_id` unique constraint) — notably, its body doesn't call `create_notification()` anywhere, unlike `add_to_playlist()`.
+- `notification_service.py` — `create_notification()` is the single low-level constructor that inserts a `Notification` row. `add_to_playlist()` appends the song to the playlist, commits, and then calls `create_notification()` to tell the original sharer (skipping it if the adder is the sharer). `rate_song()` saves or updates a `Rating` row (upsert on the `user_id`+`song_id` unique constraint) and commits.
 - `playlist_service.py` — `create_playlist()`, `get_playlist()`, `get_user_playlists()`, and `get_playlist_songs()` (joins `playlist_entries` and orders by `position` ascending, then returns the song list).
 
 **`seed_data.py`** — Drops and recreates all tables, then inserts 5 users with pre-set friendships and streak values, 10 tags, 25 songs with varying tag counts (0, 1, 3+), 3 playlists, and listening events spanning the past two weeks. This is the fixture data all reproduction steps in Milestone 2 will run against.
 
-**`tests/`** — `test_streaks.py`, `test_search.py`, `test_playlists.py` — pre-existing tests for three of the five buggy services (no test file for `feed_service` or `notification_service`).
+**`tests/`** — `test_streaks.py`, `test_search.py`, `test_playlists.py` — existing tests covering `streak_service`, `search_service`, and `playlist_service` respectively. No test file exists yet for `feed_service` or `notification_service`.
 
 ### Data flow — a user rates a song
 
-`POST /songs/<song_id>/rate` → `routes/songs.py:rate()` validates `user_id`/`score` are present, casts score to `int`, and calls `notification_service.rate_song(user_id, song_id, score)`. That function validates the score is 1–5, looks up the `Song` and `User`, checks for an existing `Rating` for that `(user_id, song_id)` pair (upsert), commits, and returns the `Rating`. The route serializes it via `rating.to_dict()` and returns 201. Unlike the playlist-add flow, nothing in this path touches `Notification` at all — no call to `create_notification()`.
+`POST /songs/<song_id>/rate` → `routes/songs.py:rate()` validates `user_id`/`score` are present, casts score to `int`, and calls `notification_service.rate_song(user_id, song_id, score)`. That function validates the score is 1–5, looks up the `Song` and `User`, checks for an existing `Rating` for that `(user_id, song_id)` pair (upsert), commits, and returns the `Rating`. The route serializes it via `rating.to_dict()` and returns 201.
 
-### Data flow — a user adds a song to a playlist (for comparison)
+### Data flow — a user adds a song to a playlist
 
-`POST /playlists/<playlist_id>/songs` → `routes/playlists.py:add_song()` → `notification_service.add_to_playlist(playlist_id, song_id, added_by)`, which appends the song to `playlist.songs` if not already present, commits, and then — if the adder isn't the original sharer — calls `create_notification()` to notify `song.shared_by`. This is the "working" notification path the missing rating-notification should mirror.
+`POST /playlists/<playlist_id>/songs` → `routes/playlists.py:add_song()` → `notification_service.add_to_playlist(playlist_id, song_id, added_by)`, which appends the song to `playlist.songs` if not already present, commits, and then — if the adder isn't the original sharer — calls `create_notification()` to notify `song.shared_by`. The route returns a plain success message rather than serializing a model.
 
 ### Patterns noticed
 
@@ -43,7 +43,7 @@ Every route follows the same shape: parse/validate request data, call exactly on
 - **Errors are communicated via `ValueError`** raised in the service layer and caught in the route as a 4xx JSON response — there's no custom exception hierarchy.
 - **All models expose `to_dict()`** and routes always serialize through it rather than building JSON ad hoc.
 - **Association tables carry extra columns when needed** (`playlist_entries.position`/`added_by`/`added_at`) instead of introducing a separate join model class.
-- **Notifications are one-directional and explicit** — a service function has to remember to call `create_notification()`; there's no event/observer system, so it's easy for one code path (rating) to simply omit the call that another parallel path (playlist-add) includes.
+- **Notifications are created explicitly by whichever service function triggers them** — there's no event/observer system; a service function calls `create_notification()` directly at the point where it decides a notification is warranted.
 
 ## Issue Selection Plan
 
