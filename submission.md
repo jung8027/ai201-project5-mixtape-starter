@@ -58,3 +58,78 @@ All five issue descriptions (from the README table and project brief) have been 
 Planned order for the required 3 (with intent to attempt all 5 as stretch): start with #5 and #3, since both look like tightly-scoped, verifiable logic errors localized to a single function; then #1, which requires reasoning about a specific weekday boundary condition. #2 and #4 will follow if time allows — #2 needs careful reasoning about the recency-window definition, and #4 requires comparing the rating path against the playlist-add path line by line before changing anything, per the hint in the brief.
 
 No code has been changed yet. Next step is Milestone 2 — reproducing each chosen bug against the seeded data before touching any fix code.
+
+## Bug Reports (Milestone 2 — Reproduction)
+
+Each bug below was triggered deliberately against the seeded database, using either the live Flask routes (via `app.test_client()`, which exercises the exact same code path as a real HTTP request) or direct calls to the service function with controlled inputs where the route can't supply the needed condition (e.g. a specific `now`). No fix code has been written — this section only confirms what is broken and how to see it break on demand.
+
+---
+
+### Bug #1 — Listening streak keeps resetting
+**File:** `services/streak_service.py`
+**Description:** Users report their listening streak dropping back to 1 even when they believe they listened on consecutive days.
+
+**How to reproduce:**
+1. Take a user with an established streak and set `last_listened_at` to a Saturday (e.g. `2026-06-27 20:00 UTC`, `weekday() == 5`) and `listening_streak = 5`.
+2. Call `update_listening_streak(user, now)` with `now` set to the very next day, Sunday `2026-06-28 09:00 UTC` (`weekday() == 6`) — exactly one calendar day later, which should count as a consecutive-day listen.
+3. Inspect `user.listening_streak` afterward.
+
+**Result:** Streak went from `5` → `1` instead of `5` → `6`, even though exactly one day had passed since the last listen. The failure is specific to the day being a Sunday — repeating the same test with a Sunday→Monday gap (or any other pair of consecutive weekdays) increments normally.
+
+---
+
+### Bug #2 — Friends Listening Now shows people from yesterday
+**File:** `services/feed_service.py`
+**Description:** The "Friends Listening Now" feed is supposed to show friends who are currently/recently listening, but users report seeing friends whose last activity was the previous day.
+
+**How to reproduce:**
+1. Pick a user with at least one friend (e.g. `nova`, friends with `kenji`).
+2. Insert a `ListeningEvent` for that friend with `listened_at = datetime.now(timezone.utc) - timedelta(hours=23, minutes=50)` — old enough that its calendar date differs from today's date (e.g. event dated `2026-07-03` while "now" is `2026-07-04`), but still inside a 24-hour window.
+3. Call `GET /feed/<nova's id>/listening-now`.
+
+**Result:** The friend's event showed up in the returned feed (`kenji` appeared in `nova`'s listening-now list) despite the event being dated a full calendar day earlier than "now." Confirmed the event's date (`2026-07-03`) differs from today's date (`2026-07-04`) before checking the feed response, so this isn't a same-day event that merely looks old.
+
+---
+
+### Bug #3 — Same song shows up twice in search
+**File:** `services/search_service.py`
+**Description:** Users report the same song appearing more than once in search results.
+
+**How to reproduce (attempted):**
+1. Confirmed at the raw-SQL level that a song with 3 tags produces 3 joined rows: `search_songs()`'s query does `Song.outerjoin(song_tags, ...)` with no `.distinct()`, and a direct SQL equivalent of that join does return one row per tag (3 rows for a 3-tagged song).
+2. Called `search_songs("Crown Heights")` (a song with 3 tags) directly, searched every song in the seed data by title and artist substrings, and tried broad single-letter queries (`"a"`, `"e"`, `"o"`, `"the"`, `"night"`) across the whole catalog.
+3. Ran the repo's existing test, `tests/test_search.py::test_search_no_duplicates_multi_tag_song`, whose own comment states "Should be 1, bug causes it to be 3."
+
+**Result: could not reproduce.** Every search above returned each song exactly once, and the existing test **passes** (does not catch a bug) in this environment. The reason: SQLAlchemy 2.0's `Session.query(Song)` (this repo runs SQLAlchemy 2.0.51) automatically de-duplicates full-entity results by primary key before they reach `search_songs()` — even though the underlying join genuinely produces 3 raw rows at the SQL level, the ORM layer collapses them back to 1 Python object. I verified this isn't specific to the `song_tags` table by reproducing the same collapse with an unrelated join (`playlist_entries`) against a song that's in 3 different playlists — still 1 result, not 3.
+
+This needs a decision before Milestone 3: either treat Issue #3 as not currently reproducible in this codebase/dependency combination and substitute a different issue for one of the required 3, or investigate further (e.g., whether the grading environment pins an older SQLAlchemy version where this auto-uniquing doesn't happen). Flagging rather than fixing something that isn't observably broken.
+
+---
+
+### Bug #4 — Missing notification when a friend rates your song
+**File:** `services/notification_service.py`
+**Description:** Users get notified when a friend adds their shared song to a playlist, but not when a friend rates it.
+
+**How to reproduce:**
+1. Pick a song and note its sharer (e.g. a song shared by `nova`).
+2. As a different user (e.g. `darius`), call `POST /songs/<song_id>/rate` with `{"user_id": darius_id, "score": 5}`.
+3. Before and after, call `GET /users/<nova_id>/notifications` and compare the count.
+
+**Result:** Notification count for the sharer was `0` before and `0` after the rating (rate request itself succeeded with `201`). Repeating the equivalent flow for playlist-add (`POST /playlists/<id>/songs` as a non-sharer) does produce a new notification for the sharer, confirming the two "friend interacts with my song" flows behave differently today.
+
+---
+
+### Bug #5 — The last song in a playlist never shows up
+**File:** `services/playlist_service.py`
+**Description:** Users report that the last song they see in a playlist in the app is missing when the playlist is viewed via the API/list view.
+
+**How to reproduce:**
+1. Pick any seeded playlist (e.g. "Late Night Vibes," which has 7 song entries in the `playlist_entries` table — confirmed via a direct count query).
+2. Call `GET /playlists/<playlist_id>/songs`.
+3. Compare the returned `count` to the real number of entries.
+
+**Result:** The playlist has 7 entries in the database; the endpoint returned only 6 songs. This reproduced identically on all 3 seeded playlists (each has 7 entries in the DB, each endpoint call returns 6) — the last song by `position` is consistently dropped.
+
+---
+
+**Summary:** 4 of 5 issues (#1, #2, #4, #5) reproduced cleanly and deterministically. #3 did not reproduce despite a genuine, multi-angle attempt (unit-level, endpoint-level, and the pre-existing test suite) — see the note above. No code has been modified; the database was re-seeded (`python seed_data.py`) after this investigation to return to a clean state before any fix work begins.
