@@ -65,7 +65,7 @@ All five issue descriptions (from the README table and project brief) have been 
 
 Planned order for the required 3 (with intent to attempt all 5 as stretch): start with #5 and #3, since both look like tightly-scoped, verifiable logic errors localized to a single function; then #1, which requires reasoning about a specific weekday boundary condition. #2 and #4 will follow if time allows — #2 needs careful reasoning about the recency-window definition, and #4 requires comparing the rating path against the playlist-add path line by line before changing anything, per the hint in the brief.
 
-No code has been changed yet. Next step is Milestone 2 — reproducing each chosen bug against the seeded data before touching any fix code.
+**Update after Milestone 2:** #3 did not reproduce (see the Root Cause Analysis section below) and was dropped from the plan. All 4 of the remaining issues — #1, #2, #4, #5 — were fixed instead of the originally planned 3, covering the "fix a 4th bug" stretch feature.
 
 ## Root Cause Analysis
 
