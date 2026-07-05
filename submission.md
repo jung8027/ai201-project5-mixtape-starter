@@ -2,7 +2,15 @@
 
 ## AI Usage
 
-*(This section will be finalized in Milestone 4. Noting Milestone 1 usage now while it's fresh: Claude Code was used to read `app.py`, `models.py`, every file in `routes/` and `services/`, and `seed_data.py` directly via the file-reading tools — not to guess where bugs were, but to build the map below. No fix code has been written yet.)*
+Claude Code was used throughout this project for codebase navigation, reproduction, and debugging — not for guessing where bugs were before reading the code.
+
+**Codebase orientation (Milestone 1):** Directed it to read `app.py`, `models.py`, every file in `routes/` and `services/`, and `seed_data.py`, and to trace two concrete data flows (rate-a-song, add-to-playlist) rather than just summarizing file purposes. The first draft of the codebase map failed a self-review: it used comparative language that implicitly spoiled bugs before any bug work had started (e.g. noting that `rate_song()` doesn't call `create_notification()` "unlike" `add_to_playlist()`, and calling the streak's weekday check "suspicious"). That draft was caught and rewritten to describe each function's mechanics neutrally, with the bug-relevant reasoning moved into a separate "Issue Selection Plan" section where it belonged.
+
+**Reproduction (Milestone 2):** Rather than asserting a bug existed from reading code alone, it wrote and ran reproduction scripts against the live seeded database — Flask test-client calls for HTTP-reachable behavior, and direct service-function calls with controlled timestamps where a route couldn't supply the needed condition (e.g. forcing a specific Sunday `now` for the streak check). For Issue #3, the first reproduction attempt (assuming an unfiltered `outerjoin` against `song_tags` would return duplicate rows) failed silently rather than throwing an error — every search returned each song exactly once. Instead of treating that as inconclusive, it verified the negative result four separate ways: comparing raw SQL row counts against the ORM query, reproducing the same collapse with an unrelated join, running the repository's own pre-existing test (which passes despite its comment expecting a failure), and searching broad queries across the entire seed catalog. This confirmed SQLAlchemy 2.0's automatic ORM entity de-duplication was the actual explanation, and the issue was documented as genuinely non-reproducible rather than forced into a fix.
+
+**Fixing and documentation (Milestone 3):** For each of the 4 reproducible issues, it implemented the smallest targeted fix, then re-ran both the specific reproduction and the full `pytest` suite before writing that issue's root cause analysis entry. Two mistakes worth flagging honestly: (1) on the first pass, it drafted all 4 RCA entries in one batch before the corresponding fixes for #2, #4, and #5 were implemented — this broke the requested fix→commit→doc→commit sequence and was caught before anything was committed; the work was discarded and redone one bug at a time. (2) An early verification for the Issue #2 fix produced a misleading result — a test friend still appeared in the "listening now" feed after the synthetic stale event was removed, which looked like the fix hadn't worked. Investigating further showed the seeded user had an unrelated, genuine same-day listening event masking the real signal; the test was rebuilt using two isolated throwaway users with no other data to get a clean read, which is what the RCA entry for Issue #2 documents.
+
+**Merging:** Two merges of `bugfix/mixtape` into `main` were performed on request. The second hit a real conflict in `submission.md` because a "milestone 2 bug documentation" commit had been made directly on `main` separately from the `bugfix/mixtape` work. Before resolving, it diffed both versions to confirm the `bugfix/mixtape` side (the "Root Cause Analysis" section) was a strict superset of the `main`-only "Bug Reports" section — same bugs, plus root cause and fix detail — rather than picking a side without checking.
 
 ## Codebase Map
 
@@ -57,7 +65,7 @@ All five issue descriptions (from the README table and project brief) have been 
 
 Planned order for the required 3 (with intent to attempt all 5 as stretch): start with #5 and #3, since both look like tightly-scoped, verifiable logic errors localized to a single function; then #1, which requires reasoning about a specific weekday boundary condition. #2 and #4 will follow if time allows — #2 needs careful reasoning about the recency-window definition, and #4 requires comparing the rating path against the playlist-add path line by line before changing anything, per the hint in the brief.
 
-No code has been changed yet. Next step is Milestone 2 — reproducing each chosen bug against the seeded data before touching any fix code.
+**Update after Milestone 2:** #3 did not reproduce (see the Root Cause Analysis section below) and was dropped from the plan. All 4 of the remaining issues — #1, #2, #4, #5 — were fixed instead of the originally planned 3, covering the "fix a 4th bug" stretch feature.
 
 ## Root Cause Analysis
 
